@@ -2,13 +2,12 @@ package main
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 )
 
-// изменить слайс не создавая копию
 func chengeSlice(arr []string) {
-	arr[0] = "Goodbye"
+	// arr[0] = Goodbye затронул бы общий массив с someSlice
+	arr = append([]string{"Goodbye"}, arr[1:]...) // меняется только локальный заголовок arr
 }
 
 func appendSomeData(arr []string) []string {
@@ -17,8 +16,8 @@ func appendSomeData(arr []string) []string {
 
 func main() {
 	someSlice := []string{"Hello", "World"}
-	// создаем копию слайса, чтобы не изменить исходный
-	chengeSlice(slices.Clone(someSlice))
+	chengeSlice(someSlice) // Hello не меняется, в функции другой заголовок слайса
+	// добавляем ! в конец слайса
 	someSlice = appendSomeData(someSlice)
-	fmt.Println(strings.Join(someSlice, ""))
+	fmt.Println(strings.Join(someSlice, "")) // HelloWorld!
 }
