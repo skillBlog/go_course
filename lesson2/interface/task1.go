@@ -21,10 +21,9 @@ type CacheBase interface {
 }
 
 type CachePayload struct {
-	// композиция - встраивание интерфейса CacheBase в структуру CachePayload
-	CacheBase
 	// RWMutex: несколько читателей (RLock) или один писатель (Lock)
-	mu    sync.RWMutex
+	mu sync.RWMutex
+	//TODO: сделать одну мапу, а не две
 	items map[string]any
 	ttl   map[string]time.Time
 }
@@ -113,10 +112,15 @@ func (c *CachePayload) Clear() {
 }
 
 func (c *CachePayload) Exists(key string) bool {
-	// переиспользуем логику Get() для проверки существования ключа
-	// делая ленивое удаление просроченных ключей
-	_, ok := c.Get(key)
-	return ok
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if _, ok := c.items[key]; !ok {
+		return false
+	}
+
+	exp, ok := c.ttl[key]
+	return ok && !time.Now().After(exp)
 }
 
 func (c *CachePayload) ToJSON() ([]byte, error) {
