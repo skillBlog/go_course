@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"sync"
 )
@@ -12,6 +11,15 @@ var bufferPool = sync.Pool{
 		b := make([]byte, 0, 64)
 		return &b
 	},
+}
+
+// toUpperInPlace меняет регистр в существующем слайсе, без новой аллокации
+func toUpperInPlace(buf []byte) {
+	for i, b := range buf {
+		if b >= 'a' && b <= 'z' {
+			buf[i] = b - ('a' - 'A')
+		}
+	}
 }
 
 // ProcessString: преобразует строку в верхний регистр, буфер берётся из sync.Pool
@@ -25,7 +33,7 @@ func ProcessString(s string) string {
 	}()
 
 	buf = append(buf, s...)
-	buf = bytes.ToUpper(buf)
+	toUpperInPlace(buf)
 
 	// string(buf) копирует данные, после return буфер можно безопасно вернуть в пул
 	return string(buf)
@@ -57,5 +65,6 @@ func main() {
 	//   1. На каждый ProcessString не создаётся новый []byte: берём из пула.
 	//   2. После string(buf) буфер возвращается в пул через defer Put.
 	//   3. sync.Pool потокобезопасен: можно вызывать ProcessString из разных горутин.
-	//   4. Утечек нет: строка-результат: копия, буфер сбрасывается [:0] перед Put.
+	//   4. Утечек нет: строка-результат — копия, буфер сбрасывается [:0] перед Put.
+	//   5. toUpperInPlace меняет buf на месте; bytes.ToUpper создавал бы новый слайс.
 }

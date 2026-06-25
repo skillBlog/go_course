@@ -32,14 +32,19 @@ func NewPluginManager() *PluginManager {
 	}
 }
 
-// RegisterPlugin: регистрирует новый плагин (симуляция)
-func (pm *PluginManager) RegisterPlugin(name string, initFn func() (Plugin, error)) {
+// RegisterPlugin: регистрирует новый плагин; ошибка, если имя уже занято
+func (pm *PluginManager) RegisterPlugin(name string, initFn func() (Plugin, error)) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
+
+	if _, exists := pm.plugins[name]; exists {
+		return fmt.Errorf("plugin %q already registered", name)
+	}
 
 	pm.plugins[name] = &pluginEntry{
 		initFn: initFn,
 	}
+	return nil
 }
 
 // get: потокобезопасная однократная инициализация одного плагина
@@ -78,10 +83,17 @@ func initDemo() (Plugin, error) {
 func main() {
 	pm := NewPluginManager()
 
-	pm.RegisterPlugin("demo", initDemo)
-	pm.RegisterPlugin("broken", func() (Plugin, error) {
+	if err := pm.RegisterPlugin("demo", initDemo); err != nil {
+		log.Fatal(err)
+	}
+	if err := pm.RegisterPlugin("broken", func() (Plugin, error) {
 		return nil, fmt.Errorf("simulated error")
-	})
+	}); err != nil {
+		log.Fatal(err)
+	}
+	if err := pm.RegisterPlugin("demo", initDemo); err != nil {
+		log.Printf("повторная регистрация: %v", err)
+	}
 
 	var wg sync.WaitGroup
 
@@ -127,4 +139,5 @@ func main() {
 	//   2. 5 горутин ждут в once.Do, пока initDemo завершится; initFn вызывается ровно один раз.
 	//   3. Ошибка из broken тоже кэшируется в entry.err: повторных вызовов initFn не будет.
 	//   4. RWMutex защищает map при RegisterPlugin и чтении entry по имени.
+	//   5. Повторный RegisterPlugin с тем же name вернёт ошибку, запись не перезапишется.
 }

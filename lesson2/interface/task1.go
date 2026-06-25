@@ -22,10 +22,8 @@ type CacheBase interface {
 
 type CachePayload struct {
 	// RWMutex: несколько читателей (RLock) или один писатель (Lock)
-	mu sync.RWMutex
-	//TODO: сделать одну мапу, а не две
-	items map[string]any
-	ttl   map[string]time.Time
+	mu    sync.RWMutex
+	items map[string]CacheItem // value и TTL хранятся вместе
 }
 
 type CacheItem struct {
@@ -39,10 +37,10 @@ func (c *CachePayload) Set(key string, value any, ttl time.Duration) {
 	// Unlock снимает Lock, defer гарантирует разблокировку при любом return
 	defer c.mu.Unlock()
 
-	// добавление в кэш по ключу, если ключ уже существует, то обновляется значение
-	c.items[key] = value
-	// добавление времени жизни в кэш, если время жизни уже существует, то обновляется время жизни
-	c.ttl[key] = time.Now().Add(ttl)
+	c.items[key] = CacheItem{
+		Value: value,
+		TTL:   time.Now().Add(ttl),
+	}
 }
 
 func (c *CachePayload) Get(key string) (any, bool) {
@@ -51,24 +49,20 @@ func (c *CachePayload) Get(key string) (any, bool) {
 	defer c.mu.Unlock()
 
 	// получение значения из кэша по ключу
-	value, ok := c.items[key]
+	item, ok := c.items[key]
 	if !ok {
 		// ключ не найден, тогда возвращаем nil и false
 		return nil, false
 	}
 
 	// ленивое удаление просроченных ключей
-	// проверка TTL: сравниваем текущее время с моментом истечения ключа
-	exp, ok := c.ttl[key]
-	// доп проверка на то, что TTL не пустой и не просрочен
-	if !ok || time.Now().After(exp) {
+	if time.Now().After(item.TTL) {
 		delete(c.items, key)
-		delete(c.ttl, key)
 		return nil, false
 	}
 
 	// ключ существует и не просрочен, тогда возвращаем значение
-	return value, true
+	return item.Value, true
 }
 
 func (c *CachePayload) Delete(key string) {
@@ -76,9 +70,8 @@ func (c *CachePayload) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// удаляем ключ из обеих map
+	// удаляем ключ из кэша
 	delete(c.items, key)
-	delete(c.ttl, key)
 }
 
 // типизированное получение значения из кэша.
@@ -107,20 +100,19 @@ func (c *CachePayload) Clear() {
 	defer c.mu.Unlock()
 
 	// полная очистка кэша
-	c.items = make(map[string]any)
-	c.ttl = make(map[string]time.Time)
+	c.items = make(map[string]CacheItem)
 }
 
 func (c *CachePayload) Exists(key string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if _, ok := c.items[key]; !ok {
+	item, ok := c.items[key]
+	if !ok {
 		return false
 	}
 
-	exp, ok := c.ttl[key]
-	return ok && !time.Now().After(exp)
+	return !time.Now().After(item.TTL)
 }
 
 func (c *CachePayload) ToJSON() ([]byte, error) {
@@ -129,32 +121,22 @@ func (c *CachePayload) ToJSON() ([]byte, error) {
 	// RUnlock снимает RLock (не путать с Unlock, который снимает Lock)
 	defer c.mu.RUnlock()
 
-	// Формируем промежуточную структуру, объединяя данные и TTL,
-	// так как они хранятся в разных map
+	// сериализуем актуальные записи; value и TTL уже хранятся вместе
 	data := make(map[string]CacheItem)
 	now := time.Now()
 
-	// обходим все элементы в кэше
-	for k, v := range c.items {
-		exp, ok := c.ttl[k]
-		// просроченные ключи не включаем в JSON
-		if !ok || now.After(exp) {
+	for k, item := range c.items {
+		if now.After(item.TTL) {
 			continue
 		}
-
-		// объединяем данные и TTL для каждого элемента
-		data[k] = CacheItem{
-			Value: v,
-			// Вместе со значениями сохраняется TTL каждой записи.
-			TTL: exp,
-		}
+		data[k] = item
 	}
 
 	return json.Marshal(data)
 }
 
 func NewCache() CacheBase {
-	return &CachePayload{items: make(map[string]any), ttl: make(map[string]time.Time)}
+	return &CachePayload{items: make(map[string]CacheItem)}
 }
 
 func main() {

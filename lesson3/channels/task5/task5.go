@@ -1,12 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
+	"strconv"
 	"sync"
+)
+
+const (
+	envFilesDir    = "TEXT_FILES_DIR"
+	envWorkerCount = "WORKER_COUNT"
+	defaultWorkers = 4
 )
 
 // результат обработки одного файла, передается из горутины в main через канал
@@ -16,39 +23,62 @@ type wordCountResult struct {
 	err      error
 }
 
-// читает файл и считает слова через strings.Fields
+// потоковое чтение: не загружаем весь файл в память, подходит для больших файлов
 func countWords(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
-	return len(strings.Fields(string(data))), nil
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Split(bufio.ScanWords)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // увеличенный лимит токена для длинных слов
+
+	count := 0
+	for scanner.Scan() {
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
-// паттерн fan-out: одна задача (список файлов) распределяется
-// на несколько горутин воркеров. Каждый файл обрабатывается в отдельной горутине
-// результаты собираются в main через for range по каналу results
-func fanOut(filePaths []string) <-chan wordCountResult {
-	// буфер = len(filePaths): горутины не блокируются на send, пока main не читает
-	results := make(chan wordCountResult, len(filePaths))
-	var wg sync.WaitGroup
-
-	for _, path := range filePaths {
-		wg.Add(1)
-		// path передается аргументом, чтобы каждая горутина получила свой файл
-		go func(p string) {
-			defer wg.Done()
-			count, err := countWords(p)
-			results <- wordCountResult{
-				filename: filepath.Base(p),
-				count:    count,
-				err:      err,
-			}
-		}(path)
+// fan-out с фиксированным пулом воркеров: N горутин обрабатывают все файлы из очереди jobs
+func fanOut(filePaths []string, workers int) <-chan wordCountResult {
+	if workers > len(filePaths) {
+		workers = len(filePaths)
+	}
+	if workers < 1 {
+		workers = 1
 	}
 
-	// отдельная горутина закрывает results, когда все воркеры завершились
+	jobs := make(chan string, len(filePaths))
+	results := make(chan wordCountResult, len(filePaths))
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				count, err := countWords(path)
+				results <- wordCountResult{
+					filename: filepath.Base(path),
+					count:    count,
+					err:      err,
+				}
+			}
+		}()
+	}
+
 	go func() {
+		for _, path := range filePaths {
+			jobs <- path
+		}
+		close(jobs)
 		wg.Wait()
 		close(results)
 	}()
@@ -56,11 +86,12 @@ func fanOut(filePaths []string) <-chan wordCountResult {
 	return results
 }
 
-// ищет папку textFiles относительно расположения task5.go,
-// иначе при запуске из корня репозитория или из редактора путь textFiles не найдется
+// TEXT_FILES_DIR - явный путь к папке с файлами, иначе ищем относительно cwd
 func resolveFilesDir() string {
+	if dir := os.Getenv(envFilesDir); dir != "" {
+		return dir
+	}
 	candidates := []string{
-		filepath.Join(filepath.Dir(sourceFileDir()), "textFiles"),
 		"textFiles",
 		filepath.Join("lesson3", "channels", "task5", "textFiles"),
 	}
@@ -72,18 +103,23 @@ func resolveFilesDir() string {
 	return "textFiles"
 }
 
-func sourceFileDir() string {
-	_, file, _, ok := runtime.Caller(1)
-	if !ok {
-		return "."
+// WORKER_COUNT - размер пула, по умолчанию runtime.NumCPU()
+func resolveWorkerCount() int {
+	if s := os.Getenv(envWorkerCount); s != "" {
+		n, err := strconv.Atoi(s)
+		if err == nil && n > 0 {
+			return n
+		}
 	}
-	return filepath.Dir(file)
+	if n := runtime.NumCPU(); n > 0 {
+		return n
+	}
+	return defaultWorkers
 }
 
 func main() {
 	filesDir := resolveFilesDir()
 
-	// читаем список файлов из директории (не содержимое, только имена)
 	entries, err := os.ReadDir(filesDir)
 	if err != nil {
 		fmt.Println("ошибка чтения директории:", err)
@@ -103,7 +139,7 @@ func main() {
 		return
 	}
 
-	// fan-out: параллельная обработка + агрегация в main
+	// fan-out: фиксированный пул воркеров + агрегация в main
 	// содержимое textFiles/ и ожидаемый подсчет слов:
 	//   file1.txt - "hello world from file one" + "two words here"           8 слов
 	//   file2.txt - "go is awesome for concurrency patterns"                 6 слов
@@ -120,7 +156,7 @@ func main() {
 	//
 	// Итог всего слов: 20 всегда одинаковый; порядок строк file1/file2/file3 может меняться
 	totalWords := 0
-	for result := range fanOut(filePaths) {
+	for result := range fanOut(filePaths, resolveWorkerCount()) {
 		if result.err != nil {
 			fmt.Printf("%s: ошибка — %v\n", result.filename, result.err)
 			continue

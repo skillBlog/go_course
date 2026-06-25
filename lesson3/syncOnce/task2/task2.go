@@ -39,10 +39,11 @@ func (cm *ConfigManager) LoadConfig() {
 	cm.once.Do(cm.loadConfig)
 }
 
-// Get: возвращает значение по ключу (при первом вызове триггерит загрузку)
-func (cm *ConfigManager) Get(key string) string {
+// Get: возвращает значение по ключу и ok (как у map); при первом вызове триггерит загрузку
+func (cm *ConfigManager) Get(key string) (string, bool) {
 	cm.LoadConfig()
-	return cm.config[key]
+	value, ok := cm.config[key]
+	return value, ok
 }
 
 // PrintConfig: выводит все загруженные параметры
@@ -62,7 +63,12 @@ func main() {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			fmt.Printf("горутина %d: app_name = %s\n", id, configManager.Get("app_name"))
+			appName, ok := configManager.Get("app_name")
+			if !ok {
+				fmt.Printf("горутина %d: ключ app_name не найден\n", id)
+				return
+			}
+			fmt.Printf("горутина %d: app_name = %s\n", id, appName)
 		}(i)
 	}
 

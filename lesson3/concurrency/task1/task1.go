@@ -26,9 +26,15 @@ func (c *SafeCache) Set(key, value string) {
 	c.data[key] = value
 }
 
+// NewSafeCache создаёт потокобезопасный кеш с инициализированной map
+func NewSafeCache() *SafeCache {
+	return &SafeCache{
+		data: make(map[string]string),
+	}
+}
+
 func main() {
-	// data нужно инициализировать через make, иначе Set упадёт с panic на nil map
-	cache := &SafeCache{data: make(map[string]string)}
+	cache := NewSafeCache()
 
 	cache.Set("key", "value")
 	value, ok := cache.Get("key")

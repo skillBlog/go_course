@@ -1,34 +1,48 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+)
+
+const totalCount = 100
+
+type squareResult struct {
+	value int
+	err   error
+}
+
+func square(x int) (int, error) {
+	if x < 0 {
+		return 0, fmt.Errorf("отрицательное число: %d", x)
+	}
+	return x * x, nil
+}
 
 func main() {
-	// исходные числа
-	naturals := make(chan int)
-	// квадраты чисел
-	squares := make(chan int)
+	// буфер = totalCount: продюсер и обработчик не блокируют друг друга на каждой отправке
+	naturals := make(chan int, totalCount)
+	squares := make(chan squareResult, totalCount)
 
-	// отправляем числа в канал naturals
-	// после отправки всех чисел закрываем канал, чтобы сигнализировать, что данных больше не будет
 	go func() {
-		for x := 0; x < 100; x++ {
+		defer close(naturals)
+		for x := 0; x < totalCount; x++ {
 			naturals <- x
 		}
-		close(naturals)
 	}()
 
-	// читаем из naturals по мере поступления,
-	// возводим каждое число в квадрат и отправляем результат в squares
-	// когда naturals закрыт и опустошён, закрываем squares
 	go func() {
+		defer close(squares)
 		for x := range naturals {
-			squares <- x * x
+			v, err := square(x)
+			squares <- squareResult{value: v, err: err}
 		}
-		close(squares)
 	}()
 
-	// читаем готовые квадраты и выводим в консоль
-	for x := range squares {
-		fmt.Println(x)
+	for r := range squares {
+		if r.err != nil {
+			fmt.Println("ошибка:", r.err)
+			continue
+		}
+		fmt.Println(r.value)
 	}
 }

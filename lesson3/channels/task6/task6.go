@@ -2,9 +2,19 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
+)
+
+const (
+	replicaCount       = 3
+	totalValues        = 10
+	envTeeWorkers      = "TEE_WORKERS"
+	defaultTeeWorkers  = 2
+	replicaChannelSize = totalValues // буфер: tee не блокируется, пока реплики догоняют
 )
 
 // dbReplica имитирует запись в одну реплику БД.
@@ -16,33 +26,65 @@ func dbReplica(name string, in <-chan int) {
 	fmt.Printf("Реплика %s закрыта\n", name)
 }
 
-// разветвитель: читает из input и отправляет каждое значение во все каналы реплик
-// когда input закрыт и опустошен, закрывает каналы реплик
-func tee(input <-chan int, replicas []chan int) {
-	// читаем из input, пока канал не закроют (close в main)
-	for data := range input {
-		// каждое значение отправляем во все реплики, суть паттерна tee
-		for _, r := range replicas {
-			r <- data // блокируемся, пока dbReplica не примет значение
-		}
+// tee читает input и дублирует каждое значение во все реплики.
+// пул воркеров параллельно рассылает одно значение по репликам,
+// следующее значение отправляется только после подтверждения записи во все реплики.
+func tee(input <-chan int, replicas []chan int, sendWorkers int) {
+	if sendWorkers > len(replicas) {
+		sendWorkers = len(replicas)
 	}
-	// input исчерпан, закрываем каналы реплик, чтобы dbReplica вышла из for range
+	if sendWorkers < 1 {
+		sendWorkers = 1
+	}
+
+	for data := range input {
+		jobs := make(chan int, len(replicas))
+		var wg sync.WaitGroup
+		wg.Add(sendWorkers)
+
+		for range sendWorkers {
+			go func() {
+				defer wg.Done()
+				for replicaIdx := range jobs {
+					replicas[replicaIdx] <- data
+				}
+			}()
+		}
+
+		for i := range replicas {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+	}
+
 	for _, r := range replicas {
 		close(r)
 	}
 }
 
+func resolveTeeWorkers() int {
+	if s := os.Getenv(envTeeWorkers); s != "" {
+		n, err := strconv.Atoi(s)
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	if n := runtime.NumCPU(); n > 0 && n < defaultTeeWorkers {
+		return n
+	}
+	return defaultTeeWorkers
+}
+
 func main() {
-	input := make(chan int) // Канал для входящих данных
-	replicas := []chan int{ // Реплики БД (каналы)
-		make(chan int),
-		make(chan int),
-		make(chan int),
+	input := make(chan int, totalValues)
+	replicas := make([]chan int, replicaCount)
+	for i := range replicas {
+		replicas[i] = make(chan int, replicaChannelSize)
 	}
 
 	var wg sync.WaitGroup
 
-	// каждая реплика читает из своего канала (не из общего input)
 	for i, ch := range replicas {
 		wg.Add(1)
 		go func(name string, in <-chan int) {
@@ -51,16 +93,13 @@ func main() {
 		}(strconv.Itoa(i), ch)
 	}
 
-	// tee-горутина дублирует данные из input во все реплики
-	go tee(input, replicas)
+	go tee(input, replicas, resolveTeeWorkers())
 
-	// отправляем 10 значений и закрываем входной канал
-	for i := 0; i < 10; i++ {
+	for i := 0; i < totalValues; i++ {
 		input <- i
 	}
 	close(input)
 
-	// ждем, пока все реплики обработают данные и завершатся
 	wg.Wait()
 
 	// вывод: 30 строк «Запись в X: N» (3 реплики × 10 значений) + 3 строки «Реплика X закрыта»

@@ -14,9 +14,10 @@ type ServerMetric struct {
 const bytesInMB = 1024 * 1024
 
 // декоратор (паттерн transformer): читает метрики в байтах
-// возвращает новый канал с метриками в мегабайтах
+// in <-chan ServerMetric — только чтение: функция не может писать в in и закрыть его
+// возвращает <-chan ServerMetric — потребитель тоже только читает, закрывает transformMetrics
 func transformMetrics(in <-chan ServerMetric) <-chan ServerMetric {
-	out := make(chan ServerMetric) // новый канал с метриками в мегабайтах
+	out := make(chan ServerMetric)
 
 	// читаем метрики в байтах и отправляем в новый канал с метриками в мегабайтах
 	go func() {
@@ -34,6 +35,7 @@ func transformMetrics(in <-chan ServerMetric) <-chan ServerMetric {
 }
 
 // produceMetrics: отправляет метрики в байтах и закрывает канал
+// out chan<- ServerMetric - только запись: нельзя читать из канала, зато можно close(out)
 func produceMetrics(out chan<- ServerMetric, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for i := 0; i < 10; i++ {
@@ -43,6 +45,7 @@ func produceMetrics(out chan<- ServerMetric, wg *sync.WaitGroup) {
 }
 
 // sendToAPI: имитирует отправку преобразованных метрик в API
+// in <-chan ServerMetric - только чтение: закрывать канал может только тот, кто в него пишет
 func sendToAPI(in <-chan ServerMetric, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for m := range in {
@@ -51,18 +54,24 @@ func sendToAPI(in <-chan ServerMetric, wg *sync.WaitGroup) {
 }
 
 func main() {
+	// chan ServerMetric - двунаправленный канал, и чтение, и запись.
+	// make создаёт именно chan T, при передаче в функции Go неявно сужает тип:
+	//   metrics       -> produceMetrics(out chan<- ...)  - только запись
+	//   metrics       -> transformMetrics(in <-chan ...)  - только чтение
+	// Сужение направления на этапе компиляции защищает от случайной записи в канал-приёмник
+	// или чтения из канала-источника не той стороной конвейера.
 	metrics := make(chan ServerMetric)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// источник: метрики в байтах
+	// produceMetrics получает send-only view: пишет 10 метрик и закрывает канал
 	go produceMetrics(metrics, &wg)
 
-	// декоратор: переводит байты в мегабайты
+	// transformMetrics читает из metrics (<-chan) и отдаёт новый read-only канал
 	apiMetrics := transformMetrics(metrics)
 
-	// потребитель: читает уже преобразованные метрики
+	// sendToAPI читает только из apiMetrics; закрытие делает transformMetrics после range in
 	go sendToAPI(apiMetrics, &wg)
 
 	wg.Wait()

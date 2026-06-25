@@ -56,19 +56,11 @@ func loadUsers(comments []Comment) []User {
 	return users
 }
 
-var (
-	attachmentOnce sync.Once // выполнит загрузку вложений ровно один раз за всю программу
-	attachments    []string
-)
-
-// loadAttachments: только при наличии sessionID
-// sync.Once: даже если вызвать функцию дважды, тяжёлая загрузка произойдёт один раз
-func loadAttachments(sessionID string) {
-	attachmentOnce.Do(func() {
-		time.Sleep(50 * time.Millisecond)
-		fmt.Printf("[этап 3] вложения загружены для session-id: %s\n", sessionID)
-		attachments = []string{"report.pdf", "photo.png"}
-	})
+// loadAttachments имитирует загрузку вложений по sessionID
+func loadAttachments(sessionID string) []string {
+	time.Sleep(50 * time.Millisecond)
+	fmt.Printf("[этап 3] вложения загружены для session-id: %s\n", sessionID)
+	return []string{"report.pdf", "photo.png"}
 }
 
 func main() {
@@ -106,7 +98,7 @@ func main() {
 	}()
 
 	// этап 3: вложения
-	// ждёт сессию: если sessionID пустой, выходим, вложения не грузим
+	// ждёт сессию: если sessionID пустой, выходим; иначе грузим один раз в этой горутине
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -115,7 +107,7 @@ func main() {
 			fmt.Println("[этап 3] вложения пропущены — нет session-id")
 			return
 		}
-		loadAttachments(session.SessionID)
+		attachments := loadAttachments(session.SessionID)
 		for _, a := range attachments {
 			fmt.Printf("  → вложение: %s\n", a)
 		}

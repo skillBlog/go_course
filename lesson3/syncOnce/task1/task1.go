@@ -25,6 +25,16 @@ func (d *Database) initConnection() {
 	fmt.Println("подключение создано")
 }
 
+// NewDatabase создаёт экземпляр БД; подключение ещё не открыто
+func NewDatabase() *Database {
+	return &Database{}
+}
+
+// Init явно инициализирует подключение (можно вызвать до запуска горутин)
+func (d *Database) Init() {
+	d.once.Do(d.initConnection)
+}
+
 // GetConnection: при первом вызове создаёт conn, дальше возвращает тот же указатель
 func (d *Database) GetConnection() *Connection {
 	d.once.Do(d.initConnection)
@@ -32,7 +42,8 @@ func (d *Database) GetConnection() *Connection {
 }
 
 func main() {
-	var db Database
+	db := NewDatabase()
+	db.Init() // явная инициализация в main, до параллельного доступа
 	var wg sync.WaitGroup
 
 	for i := 0; i < 10; i++ {
@@ -56,9 +67,8 @@ func main() {
 	//   ... (ещё 7 строк, порядок горутин может отличаться)
 	//
 	// Почему так:
-	//   1. 10 горутин одновременно вызывают GetConnection().
-	//   2. sync.Once.Do гарантирует: initConnection выполнится только один раз.
-	//      Остальные горутины заблокируются внутри Do, пока инициализация не завершится.
+	//   1. NewDatabase + Init() — явная инициализация в main до старта горутин.
+	//   2. 10 горутин вызывают GetConnection(); once.Do не запустит initConnection повторно.
 	//   3. Все 10 получат один и тот же d.conn (один указатель, ID "db-main").
 	//   4. Строки "инициализация..." и "подключение создано" напечатаются ровно по одному разу.
 }

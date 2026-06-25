@@ -104,6 +104,18 @@ func (c *ObjectCache) Delete(key string) {
 	delete(c.items, key)
 }
 
+// putJSONBuffer возвращает слайс в пул.
+// bytes.Buffer при превышении cap(*bp) выделяет новый backing array, pooled слайс
+// на него уже не ссылается, сохраняем увеличенную ёмкость, иначе пул всегда остаётся 256 байт.
+func (c *ObjectCache) putJSONBuffer(bp *[]byte, buf *bytes.Buffer) {
+	if buf.Cap() > cap(*bp) {
+		*bp = make([]byte, 0, buf.Cap())
+	} else {
+		*bp = (*bp)[:0]
+	}
+	c.jsonPool.Put(bp)
+}
+
 // ToJSON: сериализует актуальные записи кэша, буфер берётся из sync.Pool
 func (c *ObjectCache) ToJSON() ([]byte, error) {
 	c.mu.RLock()
@@ -120,14 +132,12 @@ func (c *ObjectCache) ToJSON() ([]byte, error) {
 	buf := bytes.NewBuffer((*bp)[:0])
 
 	if err := json.NewEncoder(buf).Encode(snapshot); err != nil {
-		*bp = (*bp)[:0]
-		c.jsonPool.Put(bp)
+		c.putJSONBuffer(bp, buf)
 		return nil, err
 	}
 
 	out := append([]byte(nil), buf.Bytes()...)
-	*bp = (*bp)[:0]
-	c.jsonPool.Put(bp)
+	c.putJSONBuffer(bp, buf)
 	return out, nil
 }
 
@@ -162,4 +172,6 @@ func main() {
 	//   2. cleanupLoop в фоне периодически удаляет просроченные ключи.
 	//   3. Get тоже проверяет TTL: даже без фоновой очистки вернёт false.
 	//   4. ToJSON использует sync.Pool для буфера сериализации вместо новой аллокации каждый раз.
+	//   5. Если JSON больше cap pooled слайса, Buffer реллоцируется; putJSONBuffer сохраняет
+	//      новую ёмкость в пуле, иначе рост буфера терялся бы при каждом Put.
 }

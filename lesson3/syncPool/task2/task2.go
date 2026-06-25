@@ -43,11 +43,9 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	data := requestDataPool.Get().(*RequestData)
 	defer func() {
-		data.Reset()
+		data.Reset() // один раз: очищаем перед возвратом в пул
 		requestDataPool.Put(data)
 	}()
-
-	data.Reset()
 
 	if err := json.NewDecoder(r.Body).Decode(data); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -74,7 +72,7 @@ func main() {
 
 	// как работает sync.Pool здесь:
 	//   1. Get() берёт RequestData с уже созданными Items (cap 8) и Labels map.
-	//   2. Reset() перед Decode: объект не содержит данных прошлого запроса.
-	//   3. defer Reset() + Put(): буферы map/slice переиспользуются, GC меньше нагружен.
+	//   2. Объект из пула уже чистый: предыдущий запрос вызвал Reset() в defer перед Put().
+	//   3. defer Reset() + Put(): очищаем после обработки, буферы map/slice переиспользуются.
 	//   4. sync.Pool потокобезопасен при конкурентных HTTP-запросах.
 }

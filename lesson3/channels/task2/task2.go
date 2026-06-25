@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"time"
 )
 
@@ -9,8 +10,32 @@ func worker() chan int {
 	go func() {
 		time.Sleep(3 * time.Second)
 		ch <- 42
+		close(ch)
 	}()
 	return ch
+}
+
+// fanIn объединяет несколько каналов в один (паттерн fan-in)
+func fanIn(channels ...<-chan int) <-chan int {
+	out := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(len(channels))
+
+	for _, ch := range channels {
+		go func(c <-chan int) {
+			defer wg.Done()
+			for v := range c {
+				out <- v
+			}
+		}(ch)
+	}
+
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+
+	return out
 }
 
 // func main() {
@@ -24,12 +49,10 @@ func worker() chan int {
 func main() {
 	timeStart := time.Now()
 
-	// сначала запускаем горутины
-	ch1 := worker()
-	ch2 := worker()
+	// оба воркера стартуют сразу, fan-in сливает их каналы в один
+	merged := fanIn(worker(), worker())
+	<-merged
+	<-merged
 
-	// теперь обе горутины уже работают одновременно
-	// и обе спят свои 3 секунды параллельно
-	_, _ = <-ch1, <-ch2
 	println(int(time.Since(timeStart).Seconds())) // 3
 }
